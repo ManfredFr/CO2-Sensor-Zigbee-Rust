@@ -1,0 +1,2 @@
+default_fqbn: esp32:esp32:esp32h2:PartitionScheme=zigbee,ZigbeeMode=ed,EraseFlash=all
+default_port: /dev/cu.wchusbserial5AF61107351
