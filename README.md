@@ -1,10 +1,6 @@
 # ESP32-H2 Zigbee CO2 Sensor (Rust)
 
-A battery-free, WiFi-free indoor air-quality sensor: an **ESP32-H2** reads CO2
-from a **Senseair S8** and reports it over **Zigbee** into Home Assistant via
-Zigbee2MQTT. The onboard RGB LED gives an at-a-glance air-quality indication.
-Firmware is written in **Rust** (std/ESP-IDF with Espressif's Zigbee SDK via
-FFI).
+A battery-free, WiFi-free indoor air-quality sensor: an **ESP32-H2** reads CO2 from a **Senseair S8** and reports it over **Zigbee** into Home Assistant via Zigbee2MQTT. The onboard RGB LED gives an at-a-glance air-quality indication. Firmware is written in **Rust** (std/ESP-IDF with Espressif's Zigbee SDK via FFI).
 
 ## Features
 
@@ -12,22 +8,22 @@ FFI).
   Assistant) using the S8's Modbus RTU interface
 - **Zigbee End Device** — no WiFi credentials, no MQTT config on the device;
   it joins the Zigbee mesh like any commercial sensor
-- **LED air-quality indicator** (brightness adjustable from HA, 0 % = off):
-
-  | CO2 | LED |
-  |---|---|
-  | ≤ 1000 ppm | green — good |
-  | 1001–2000 ppm | orange — fair/poor |
-  | 2001–5000 ppm | red — bad |
-  | > 5000 ppm | flashing red — dangerous |
-
+- **LED air-quality indicator** — brightness adjustable from HA, 0 % = off
 - **Settings survive in HA**: report interval and LED brightness are Zigbee
   attributes, exposed as number sliders in Home Assistant
 
+### LED colors
+
+| CO2 | LED |
+|---|---|
+| ≤ 1000 ppm | green — good |
+| 1001–2000 ppm | orange — fair/poor |
+| 2001–5000 ppm | red — bad |
+| > 5000 ppm | flashing red — dangerous |
+
 ## How it works
 
-The device exposes three Zigbee endpoints, decoded by the external converter
-[`Co2-Sensor.js`](Co2-Sensor.js):
+The device exposes three Zigbee endpoints, decoded by the external converter [`Co2-Sensor.js`](Co2-Sensor.js):
 
 | EP | ZCL Cluster | Purpose |
 |---|---|---|
@@ -35,10 +31,7 @@ The device exposes three Zigbee endpoints, decoded by the external converter
 | 2 | Analog Output | Report interval in seconds, read/write |
 | 3 | Analog Output | LED brightness 0–100 %, read/write |
 
-CO2 reporting uses ZCL *configured reporting*: on join, the converter's
-`configure` step binds endpoint 1 to the coordinator and configures
-reporting; from then on the firmware only updates the attribute value and the
-stack reports changes automatically.
+CO2 reporting uses ZCL *configured reporting*: on join, the converter's `configure` step binds endpoint 1 to the coordinator and configures reporting; from then on the firmware only updates the attribute value and the stack reports changes automatically.
 
 ## Hardware
 
@@ -74,15 +67,11 @@ Only four wires are needed, all on the **left header (J1)** of the DevKit:
 
 ![Senseair S8 pinout](Specs/Senseair-S8-Pinout-Diagram.jpg)
 
-The S8 talks Modbus RTU; the firmware polls input register 3 (CO2 ppm) with
-the request `FE 04 00 03 00 01 D5 C5` and parses the 7-byte response.
+The S8 talks Modbus RTU; the firmware polls input register 3 (CO2 ppm) with the request `FE 04 00 03 00 01 D5 C5` and parses the 7-byte response.
 
 ## Firmware
 
-The firmware (**v2.0**) lives in [`Rust/`](Rust/) — see
-[`Rust/README.md`](Rust/README.md) for toolchain setup, build & flash
-instructions, serial monitoring, and the hard-won ESP32-H2 lessons
-(esp-idf-hal bugs, linker workarounds, Zigbee stack pitfalls).
+The firmware (**v2.0**) lives in [`Rust/`](Rust/) — see [`Rust/README.md`](Rust/README.md) for toolchain setup, build & flash instructions, serial monitoring, and the hard-won ESP32-H2 lessons (esp-idf-hal bugs, linker workarounds, Zigbee stack pitfalls).
 
 | Component | Version |
 |---|---|
