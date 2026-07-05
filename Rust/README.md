@@ -1,128 +1,129 @@
-# ESP32-H2 CO2 Sensor — Rust Firmware
+# ESP32-H2 CO2 Sensor — Rust Firmware (v2.0)
 
-Rust firmware for the ESP32-H2-DevKit-N4 with a Senseair S8 CO2 sensor.
-Uses `esp-hal` (no_std) with the Embassy async executor.
+Rust port of the Arduino firmware: a Zigbee End Device on the ESP32-H2-DevKit-N4
+with a Senseair S8 CO2 sensor, integrated into Home Assistant via Zigbee2MQTT.
 
-> **Status:** dummy mode — simulates CO2 readings every 5 s. Real S8 UART reads not yet implemented.
+Built on **std / ESP-IDF** (`esp-idf-svc` + `esp-idf-sys`) with Espressif's
+closed-source Zigbee stack (`esp-zigbee-lib` 1.6) pulled in as an ESP-IDF
+component; bindgen generates the `esp_zb_*` FFI (module `esp_idf_svc::sys::zb`).
+
+> The earlier `no_std`/esp-hal prototype was replaced: the Zigbee stack is a
+> C library that requires ESP-IDF/FreeRTOS, which means `std`.
+
+## Endpoints (unchanged from Arduino — same Z2M converter `../Co2-Sensor.js`)
+
+| EP | Cluster | Purpose |
+|---|---|---|
+| 1 | Temperature Measurement | CO2 carrier: ppm stored as ppm/100 °C, ZCL INT16 = ppm |
+| 2 | Analog Output | Report interval 10–300 s (read/write) |
+| 3 | Analog Output | LED brightness 0–100 % (read/write) |
 
 ## Wiring
 
-| S8 Pin   | ESP32-H2 J1 Pin | Notes            |
-|----------|-----------------|------------------|
-| VCC (G+) | 5V (pin 14)     | Power            |
-| GND (G0) | GND (pin 13)    | Ground           |
-| TxD (TX) | GPIO4 (pin 9)   | Sensor → ESP     |
-| RxD (RX) | GPIO5 (pin 10)  | ESP → Sensor     |
+| S8 Pin | ESP32-H2 J1 Pin | Notes |
+|---|---|---|
+| VCC (G+) | 5V (pin 14) | Power |
+| GND (G0) | GND (pin 13) | Ground |
+| TxD | GPIO4 (pin 9) | Sensor → ESP |
+| RxD | GPIO5 (pin 10) | ESP → Sensor |
 
-S8 runs on 5V; UART logic is 3.3V — no level shifter needed.
-All four connections are on the J1 (left) header.
+WS2812 RGB LED on GPIO8 (RGB byte order on this board, not GRB).
 
 ## Prerequisites
 
-### Homebrew
-
 ```bash
-brew install rustup ninja cmake libusb
-rustup-init   # accept defaults, then restart your shell
+brew install rustup ninja cmake
+rustup toolchain install nightly --component rust-src
+cargo install ldproxy espflash
 ```
 
-> You may already have `rust` via Homebrew. `rustup` is also needed to manage
-> toolchain targets — run `rustup update stable` if the installed version is old.
-
-### Rust toolchain & tools
+## Build
 
 ```bash
-# RISC-V target for ESP32-H2 (no Xtensa fork needed — H2 is RISC-V)
-rustup target add riscv32imac-unknown-none-elf
-
-# Flashing tool — pin to v3.x; v4.x has an app-descriptor validation bug
-# with esp-hal 1.0.0-rc.0 that requires --ignore-app-descriptor at flash time
-cargo install espflash --version "^4" --locked
+# rustup's proxies must shadow Homebrew's rust (build-std needs nightly)
+export PATH="$(brew --prefix rustup)/bin:$PATH"
+cargo build --release
 ```
 
-### Verify
+First build downloads ESP-IDF v5.3.3 (~1 GB) into `~/.espressif` plus the
+Zigbee components, and takes a while. Subsequent builds are fast.
+
+### Spaces-in-path workaround (important)
+
+ESP-IDF's build system cannot handle spaces in paths, and this project lives
+under Dropbox. Therefore:
+
+- the cargo target dir is `/Users/manfred/.cache/co2-sensor-rust/target`
+  (set in `.cargo/config.toml`)
+- esp-idf-sys treats the **parent of the target dir** as the workspace anchor:
+  it runs `cargo metadata` there and resolves `sdkconfig.defaults` relative to
+  it. Symlinks in `~/.cache/co2-sensor-rust/` (`Cargo.toml`, `Cargo.lock`,
+  `src`, `build.rs`, `bindings.h`, `sdkconfig.defaults`, `partitions.csv`)
+  make that work. Without them the Zigbee components are silently skipped.
+
+Recreate the symlinks if the cache dir is ever deleted:
 
 ```bash
-rustup target list --installed | grep riscv
-# should show: riscv32imac-unknown-none-elf
+P="$(pwd)"; W=~/.cache/co2-sensor-rust; mkdir -p "$W"
+for f in Cargo.toml Cargo.lock src build.rs bindings.h sdkconfig.defaults partitions.csv; do
+  ln -sfn "$P/$f" "$W/$f"
+done
 ```
 
-## Build & Flash
+## Flash
 
 ```bash
-# Build (use rustup's cargo, not the Homebrew one)
-PATH="$HOME/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH" \
-  cargo build --release
-
-# Flash
-espflash flash \
-  --port /dev/tty.usbmodem312401 \
-  --ignore-app-descriptor \
-  target/riscv32imac-unknown-none-elf/release/co2-sensor
+OUT=$(ls -d ~/.cache/co2-sensor-rust/target/riscv32imac-esp-espidf/release/build/esp-idf-sys-*/out | head -1)
+espflash flash --port /dev/cu.usbmodem* --chip esp32h2 \
+  --bootloader "$OUT/build/bootloader/bootloader.bin" \
+  --partition-table partitions.csv \
+  ~/.cache/co2-sensor-rust/target/riscv32imac-esp-espidf/release/co2-sensor
 ```
 
-> `--ignore-app-descriptor` is required because esp-hal 1.0.0-rc.0 places the
-> descriptor in `.rodata_desc` (not `.flash.appdesc`) — espflash 4.x looks for
-> the latter. The bootloader finds the descriptor correctly at runtime.
+The partition table adds the `zb_storage`/`zb_fct` partitions the Zigbee stack
+requires (equivalent of Arduino's "Zigbee 4MB" scheme).
 
-### Monitor serial output
+## Monitor
 
 ```bash
 python3 -c "
-import serial, time
-s = serial.Serial('/dev/tty.usbmodem312401', 115200, timeout=1)
-for _ in range(60):
+import serial
+s = serial.Serial('/dev/cu.usbmodem3111401', 115200, timeout=1)
+s.setDTR(False); s.setRTS(False)
+while True:
     line = s.readline()
-    if line: print(line.decode('utf-8', errors='replace').rstrip())
-s.close()
+    if line: print(line.decode(errors='replace').rstrip())
 "
 ```
 
-Expected output (cycling every 5 s):
-```
-INFO - CO2 sensor booted (dummy mode)
-INFO - CO2: 412 ppm
-INFO - CO2: 480 ppm
-...
-```
+## Hard-won lessons (Rust-specific; ZCL lessons are in ../CHANGELOG.md)
 
-### Finding the port
-
-```bash
-ls /dev/tty.usbmodem* 2>/dev/null
-```
-
-The ESP32-H2 DevKit-N4 uses the native USB-Serial port (`tty.usbmodem*`).
-The auto-reset via DTR/RTS does **not** work on native USB — if espflash
-fails to connect, hold **BOOT**, tap **RST**, release BOOT to enter
-bootloader mode manually.
-
-## Dependency notes
-
-esp-hal uses tightly coupled version pins:
-
-| Crate             | Version      | Reason                              |
-|-------------------|--------------|-------------------------------------|
-| esp-hal           | 1.0.0-rc.0   | Forced by esp-hal-embassy 0.9.1     |
-| esp-hal-embassy   | 0.9.1        | Latest published; requires rc.0     |
-| embassy-executor  | 0.7          | Version bundled by esp-hal-embassy  |
-| embassy-time      | 0.4          | Matches executor 0.7                |
-| esp-backtrace     | 0.19         | Latest; `exception-handler` removed |
-| esp-println       | 0.17         | `log` feature renamed to `log-04`   |
-
-## App descriptor
-
-The ESP-IDF v5.x second-stage bootloader requires an `esp_app_desc_t` struct
-at flash offset `app_partition_start + 0x20`. It is placed manually in
-`.rodata_desc` (the first section in DROM per the esp-hal linker script) with
-magic word `0xABCD5432` (changed from `0xABCD5AA5` in v4.x).
+- **esp-idf-hal 0.45 UART panics on ESP32-H2**: the H2's default UART source
+  clock (PLL_F48M) has no `SourceClock` variant, and `UartConfig::new()` hits
+  `unreachable!()` before any builder method can override it. The firmware
+  uses raw ESP-IDF UART FFI instead (`uart_param_config` & co).
+- **Zigbee join must not race explicit reports**: an explicit
+  `esp_zb_zcl_report_attr_cmd_req` before Z2M's converter `configure` has
+  created the binding asserts inside the closed-source stack
+  (`zcl_general_commands.c:612`) and reboots the device. Only set attributes
+  with `esp_zb_zcl_set_attribute_val`; the stack auto-reports once reporting
+  is configured.
+- **`esp_zb_app_signal_handler` is resolved by the linker**: define it as
+  `#[no_mangle] extern "C"`. The signal type is `*(*signal).p_app_signal`
+  (single deref — a double deref reads garbage and load-faults).
+- **`--undefined=vsnprintf` link flag**: the closed-source phy lib (`-lphy`)
+  is scanned after the last `-lc` and needs vsnprintf; the early marker makes
+  libc donate the symbol (see `.cargo/config.toml`).
+- **esp-zigbee-lib must be pinned `^1.6`**: version `*` resolves to 2.x with a
+  restructured API ("ezbee") that matches no documentation or examples.
 
 ## Project structure
 
 ```
-src/main.rs         — firmware entry point + app descriptor + dummy CO2 loop
-Cargo.toml          — dependencies
-.cargo/config.toml  — RISC-V target + linker flags
-rust-toolchain.toml — pins to stable toolchain
-README.md           — this file
+src/main.rs         — app entry, S8 Modbus reads, WS2812 LED, main loop
+src/zigbee.rs       — Zigbee endpoints, signal/action handlers, reporting
+bindings.h          — headers exposed to bindgen (esp_zigbee_core.h & co)
+sdkconfig.defaults  — Zigbee ED role, 4MB flash, custom partition table
+partitions.csv      — adds zb_storage / zb_fct partitions
+.cargo/config.toml  — target, ldproxy, build-std, workarounds (see comments)
 ```

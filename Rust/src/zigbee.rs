@@ -272,6 +272,11 @@ pub fn report_co2(ppm: u16) {
             warn!("[ZIGBEE] Could not acquire lock");
             return;
         }
+        // Setting the attribute is enough: once Z2M's converter `configure`
+        // has bound the cluster and configured reporting, the stack reports
+        // changes automatically. An explicit report_attr_cmd before that
+        // binding exists asserts inside the closed-source stack
+        // (zcl_general_commands.c:612) and reboots the device.
         esp_zb_zcl_set_attribute_val(
             CO2_ENDPOINT,
             esp_zb_zcl_cluster_id_t_ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT as u16,
@@ -280,17 +285,7 @@ pub fn report_co2(ppm: u16) {
             &value as *const i16 as *mut c_void,
             false,
         );
-        let mut cmd: esp_zb_zcl_report_attr_cmd_t = core::mem::zeroed();
-        cmd.zcl_basic_cmd.src_endpoint = CO2_ENDPOINT;
-        cmd.address_mode =
-            esp_zb_aps_address_mode_t_ESP_ZB_APS_ADDR_MODE_DST_ADDR_ENDP_NOT_PRESENT;
-        cmd.clusterID = esp_zb_zcl_cluster_id_t_ESP_ZB_ZCL_CLUSTER_ID_TEMP_MEASUREMENT as u16;
-        cmd.attributeID = esp_zb_zcl_temp_measurement_attr_t_ESP_ZB_ZCL_ATTR_TEMP_MEASUREMENT_VALUE_ID as u16;
-        let err = esp_zb_zcl_report_attr_cmd_req(&mut cmd);
         esp_zb_lock_release();
-        if err != 0 {
-            warn!("[ZIGBEE] Report failed: {err}");
-        }
     }
 }
 

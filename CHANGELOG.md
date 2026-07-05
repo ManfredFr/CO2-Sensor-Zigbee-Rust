@@ -1,6 +1,18 @@
 # Changelog
 
-## v1.2 — Current (31 May 2026)
+## v2.0 — Current (5 July 2026) — Rust port
+- Firmware fully ported from Arduino C++ to Rust (`Rust/`), running on
+  std/ESP-IDF with Espressif's Zigbee SDK via esp-idf-sys FFI bindings
+- Same three endpoints and same Z2M converter (`Co2-Sensor.js`) as v1.3 —
+  verified end-to-end: CO2 reporting, interval + brightness read/write
+- Real S8 readings over Modbus RTU (no more simulation)
+- CO2 reporting now relies on ZCL configured reporting (attribute set only);
+  explicit report commands removed — they assert inside the stack when sent
+  before the Z2M binding exists (`zcl_general_commands.c:612`)
+- Rust-specific lessons (esp-idf-hal UART panic on H2, spaces-in-path
+  workarounds, linker flags) documented in `Rust/README.md`
+
+## v1.2 (31 May 2026)
 - CO2 reporting working end-to-end via Zigbee2MQTT
 - Used ZigbeeTempSensor as carrier for CO2 value (ppm stored as ppm/100.0°C)
 - Converter `configure` section added to trigger Z2M binding + Configure Reporting command on join
