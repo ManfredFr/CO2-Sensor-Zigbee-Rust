@@ -273,19 +273,17 @@ fn main() -> anyhow::Result<()> {
         .stack_size(8192)
         .spawn(zigbee::zigbee_task)?;
 
-    // Nothing useful can happen until we're on the network — readings taken
-    // before the join would be dropped anyway — so just wait.
-    info!("[ZIGBEE] Waiting to join network...");
-    while !zigbee::CONNECTED.load(Ordering::SeqCst) {
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    // Push the current settings once, so Home Assistant shows real values
-    // right after the join instead of nulls.
-    zigbee::report_settings();
-    info!("[ZIGBEE] Initial interval and brightness reported");
+    // Deliberately do NOT wait for the network here: the sensor and LED are
+    // useful standalone (e.g. in a car with no Zigbee anywhere). The stack
+    // keeps steering in the background and readings start reporting the
+    // moment a join eventually succeeds.
+    info!("[ZIGBEE] Steering in background — measuring starts now");
 
     let mut read_count = 0u32;
     let mut fail_count = 0u32;
+    // One-shot: push the settings attributes on the first successful join,
+    // so Home Assistant shows real values instead of nulls.
+    let mut settings_reported = false;
 
     loop {
         read_count += 1;
@@ -296,6 +294,12 @@ fn main() -> anyhow::Result<()> {
             Duration::from_secs(zigbee::REPORT_INTERVAL_S.load(Ordering::SeqCst) as u64);
         let brightness = zigbee::LED_BRIGHTNESS.load(Ordering::SeqCst);
         info!("[LOOP] Read #{read_count} (interval: {}s)", interval.as_secs());
+
+        if !settings_reported && zigbee::CONNECTED.load(Ordering::SeqCst) {
+            zigbee::report_settings();
+            settings_reported = true;
+            info!("[ZIGBEE] Initial interval and brightness reported");
+        }
 
         match read_co2() {
             Some(ppm) => {

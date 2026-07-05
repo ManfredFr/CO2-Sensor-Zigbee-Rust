@@ -1,6 +1,13 @@
 # Changelog
 
-## v2.0 — Current (5 July 2026) — Rust port
+## v2.0.1 — Current (5 July 2026)
+- Standalone mode: measuring and the LED indicator start immediately at
+  boot instead of waiting for a Zigbee join, so the sensor is usable with
+  no network in range (e.g. in a car). Zigbee keeps steering in the
+  background and reporting starts whenever a join succeeds.
+- Versioning switched to MAJOR.MINOR.PATCH (patch visible in swBuildId).
+
+## v2.0 (5 July 2026) — Rust port
 - Firmware fully ported from Arduino C++ to Rust (`Rust/`), running on
   std/ESP-IDF with Espressif's Zigbee SDK via esp-idf-sys FFI bindings
 - Same three endpoints and same Z2M converter (`Co2-Sensor.js`) as v1.3 —
