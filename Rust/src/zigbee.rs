@@ -88,6 +88,10 @@ static MANUFACTURER: &[u8] = b"\x09Espressif";
 static MODEL: &[u8] = b"\x09Co2Sensor";
 static DESC_INTERVAL: &[u8] = b"\x0FReport interval";
 static DESC_BRIGHTNESS: &[u8] = b"\x0ELED brightness";
+// swBuildId / dateCode surface as "Firmware version" / "Firmware build date"
+// on Zigbee2MQTT's device About page (read during the interview).
+static SW_BUILD_ID: &[u8] = b"\x04v2.0";
+static DATE_CODE: &[u8] = b"\x0820260705";
 
 // ---------------------------------------------------------------------------
 // Stack callbacks
@@ -247,6 +251,16 @@ unsafe fn make_basic_identify(cluster_list: *mut esp_zb_cluster_list_t) {
         basic,
         esp_zb_zcl_basic_attr_t_ESP_ZB_ZCL_ATTR_BASIC_APPLICATION_VERSION_ID as u16,
         &APP_VERSION as *const u8 as *mut c_void,
+    );
+    esp_zb_basic_cluster_add_attr(
+        basic,
+        esp_zb_zcl_basic_attr_t_ESP_ZB_ZCL_ATTR_BASIC_SW_BUILD_ID as u16,
+        SW_BUILD_ID.as_ptr() as *mut c_void,
+    );
+    esp_zb_basic_cluster_add_attr(
+        basic,
+        esp_zb_zcl_basic_attr_t_ESP_ZB_ZCL_ATTR_BASIC_DATE_CODE_ID as u16,
+        DATE_CODE.as_ptr() as *mut c_void,
     );
     esp_zb_cluster_list_add_basic_cluster(
         cluster_list,
