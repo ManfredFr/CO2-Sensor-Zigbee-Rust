@@ -1,8 +1,6 @@
 mod zigbee;
 
 use esp_idf_svc::hal::delay::TickType;
-use esp_idf_svc::hal::peripherals::Peripherals;
-use esp_idf_svc::hal::rmt::{FixedLengthSignal, PinState, Pulse, TxRmtDriver};
 use esp_idf_svc::sys as idf;
 use log::{info, warn};
 use std::time::Duration;
@@ -13,30 +11,62 @@ const VERSION: &str = "v2.0";
 const S8_READ_CO2: [u8; 8] = [0xFE, 0x04, 0x00, 0x03, 0x00, 0x01, 0xD5, 0xC5];
 
 
-// Send one WS2812 frame via RMT. This board's LED uses RGB byte order.
-fn ws2812_write(tx: &mut TxRmtDriver, r: u8, g: u8, b: u8) -> anyhow::Result<()> {
-    let ticks_hz = tx.counter_clock()?;
-    let t0h = Pulse::new_with_duration(ticks_hz, PinState::High, &Duration::from_nanos(350))?;
-    let t0l = Pulse::new_with_duration(ticks_hz, PinState::Low, &Duration::from_nanos(800))?;
-    let t1h = Pulse::new_with_duration(ticks_hz, PinState::High, &Duration::from_nanos(700))?;
-    let t1l = Pulse::new_with_duration(ticks_hz, PinState::Low, &Duration::from_nanos(600))?;
-
-    let mut signal = FixedLengthSignal::<24>::new();
-    // RGB byte order on the wire for this board
-    let color: u32 = ((r as u32) << 16) | ((g as u32) << 8) | b as u32;
-    for i in (0..24).rev() {
-        let bit = (color >> i) & 1 == 1;
-        let (h, l) = if bit { (t1h, t1l) } else { (t0h, t0l) };
-        signal.set(23 - i as usize, &(h, l))?;
-    }
-    tx.start_blocking(&signal)?;
-    Ok(())
+// WS2812 on GPIO8 via the new ESP-IDF RMT TX driver (raw FFI — esp-idf-hal's
+// legacy RMT driver derives wrong pulse timing on the ESP32-H2, same class of
+// clock bug as its UART config). 10 MHz resolution → 1 tick = 100 ns.
+struct Ws2812 {
+    channel: idf::rmt_channel_handle_t,
+    encoder: idf::rmt_encoder_handle_t,
 }
 
-fn set_led(tx: &mut TxRmtDriver, r: u8, g: u8, b: u8, brightness: u32) {
+// One RMT symbol: duration0(15b) | level0(1b) | duration1(15b) | level1(1b)
+const fn rmt_symbol(d0: u32, l0: u32, d1: u32, l1: u32) -> idf::rmt_symbol_word_t {
+    let mut s: idf::rmt_symbol_word_t = unsafe { core::mem::transmute(0u32) };
+    s.val = d0 | (l0 << 15) | (d1 << 16) | (l1 << 31);
+    s
+}
+
+fn ws2812_init() -> anyhow::Result<Ws2812> {
+    unsafe {
+        let mut ch_cfg: idf::rmt_tx_channel_config_t = core::mem::zeroed();
+        ch_cfg.gpio_num = 8;
+        ch_cfg.clk_src = idf::soc_periph_rmt_clk_src_t_RMT_CLK_SRC_DEFAULT;
+        ch_cfg.resolution_hz = 10_000_000; // 100 ns per tick
+        ch_cfg.mem_block_symbols = 48;
+        ch_cfg.trans_queue_depth = 4;
+        let mut channel: idf::rmt_channel_handle_t = core::ptr::null_mut();
+        idf::esp!(idf::rmt_new_tx_channel(&ch_cfg, &mut channel))?;
+
+        let mut enc_cfg: idf::rmt_bytes_encoder_config_t = core::mem::zeroed();
+        enc_cfg.bit0 = rmt_symbol(3, 1, 9, 0); // 0: 300 ns high, 900 ns low
+        enc_cfg.bit1 = rmt_symbol(9, 1, 3, 0); // 1: 900 ns high, 300 ns low
+        enc_cfg.flags.set_msb_first(1);
+        let mut encoder: idf::rmt_encoder_handle_t = core::ptr::null_mut();
+        idf::esp!(idf::rmt_new_bytes_encoder(&enc_cfg, &mut encoder))?;
+
+        idf::esp!(idf::rmt_enable(channel))?;
+        Ok(Ws2812 { channel, encoder })
+    }
+}
+
+fn set_led(led: &Ws2812, r: u8, g: u8, b: u8, brightness: u32) {
     let scale = |c: u8| ((c as u32 * brightness) / 100) as u8;
-    if let Err(e) = ws2812_write(tx, scale(r), scale(g), scale(b)) {
-        warn!("[LED] write failed: {e}");
+    // RGB byte order on the wire for this board (not the usual GRB)
+    let bytes = [scale(r), scale(g), scale(b)];
+    unsafe {
+        let tx_cfg: idf::rmt_transmit_config_t = core::mem::zeroed();
+        let err = idf::rmt_transmit(
+            led.channel,
+            led.encoder,
+            bytes.as_ptr() as *const core::ffi::c_void,
+            bytes.len(),
+            &tx_cfg,
+        );
+        if err != 0 {
+            warn!("[LED] transmit failed: {err}");
+            return;
+        }
+        idf::rmt_tx_wait_all_done(led.channel, 100);
     }
 }
 
@@ -119,19 +149,17 @@ fn main() -> anyhow::Result<()> {
     info!("  Co2-Sensor {VERSION} (Rust)");
     info!("========================================");
 
-    let p = Peripherals::take()?;
-
     // S8 UART: GPIO4 = RX (← S8 TX), GPIO5 = TX (→ S8 RX), 9600 8N1
     s8_uart_init()?;
     info!("[INIT] S8 UART started (RX=GPIO4 TX=GPIO5 @ 9600)");
 
     // WS2812 LED on GPIO8 via RMT
-    let mut led = TxRmtDriver::new(p.rmt.channel0, p.pins.gpio8, &Default::default())?;
+    let led = ws2812_init()?;
 
     // Boot flash: brief white
-    set_led(&mut led, 30, 30, 30, 100);
+    set_led(&led, 30, 30, 30, 100);
     std::thread::sleep(Duration::from_millis(500));
-    set_led(&mut led, 0, 0, 0, 100);
+    set_led(&led, 0, 0, 0, 100);
     info!("[INIT] LED ready (GPIO8)");
 
     // Zigbee stack runs its own main loop in a dedicated thread
@@ -170,9 +198,9 @@ fn main() -> anyhow::Result<()> {
                     let mut on = true;
                     while std::time::Instant::now() < end {
                         if on {
-                            set_led(&mut led, 220, 0, 0, brightness);
+                            set_led(&led, 220, 0, 0, brightness);
                         } else {
-                            set_led(&mut led, 0, 0, 0, brightness);
+                            set_led(&led, 0, 0, 0, brightness);
                         }
                         on = !on;
                         std::thread::sleep(Duration::from_millis(500));
@@ -183,7 +211,7 @@ fn main() -> anyhow::Result<()> {
                         1001..=2000 => (200, 50, 0), // orange — fair/poor
                         _ => (220, 0, 0),            // red — bad
                     };
-                    set_led(&mut led, r, g, b, brightness);
+                    set_led(&led, r, g, b, brightness);
                     std::thread::sleep(interval);
                 }
             }

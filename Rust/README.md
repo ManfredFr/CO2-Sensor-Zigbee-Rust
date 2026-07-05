@@ -102,6 +102,11 @@ while True:
   clock (PLL_F48M) has no `SourceClock` variant, and `UartConfig::new()` hits
   `unreachable!()` before any builder method can override it. The firmware
   uses raw ESP-IDF UART FFI instead (`uart_param_config` & co).
+- **esp-idf-hal's legacy RMT driver produces wrong WS2812 timing on the H2**
+  (same clock-assumption class of bug — LED silently stays dark). The
+  firmware uses the new RMT TX driver via FFI (`rmt_new_tx_channel` +
+  `rmt_new_bytes_encoder` at 10 MHz resolution) instead of the `rmt-legacy`
+  feature.
 - **Zigbee join must not race explicit reports**: an explicit
   `esp_zb_zcl_report_attr_cmd_req` before Z2M's converter `configure` has
   created the binding asserts inside the closed-source stack

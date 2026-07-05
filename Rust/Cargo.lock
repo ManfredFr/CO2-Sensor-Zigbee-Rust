@@ -223,7 +223,6 @@ version = "2.0.0"
 dependencies = [
  "anyhow",
  "embuild",
- "esp-idf-hal",
  "esp-idf-svc",
  "log",
 ]

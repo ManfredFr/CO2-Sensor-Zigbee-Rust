@@ -19,8 +19,7 @@ opt-level = "z"
 log = "0.4"
 anyhow = "1"
 esp-idf-svc = { version = "0.51", features = ["critical-section"] }
-# rmt-legacy: TxRmtDriver (used for the WS2812 LED) is only in the legacy RMT API
-esp-idf-hal = { version = "0.45", features = ["rmt-legacy"] }
+
 
 [build-dependencies]
 embuild = "0.33"
