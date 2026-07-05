@@ -1,6 +1,16 @@
 # Changelog
 
-## v2.0.1 — Current (5 July 2026)
+## v2.1.0 — Current (5 July 2026)
+- Offline CO2 history: one record per minute into a dedicated 384 KB flash
+  ring buffer (`co2_log` partition, ~34 days capacity), independent of
+  Zigbee connectivity
+- Retrieval over USB with `Rust/tools/read-log.py` (espflash read-flash +
+  CSV decode; newest boot session gets reconstructed wall-clock timestamps)
+- Boot counter in NVS distinguishes log sessions across power loss
+- Lesson: thread stack sizes — a 4 KB buffer on a 4 KB thread stack caused
+  a Stack protection fault boot loop; scan buffers shrunk, stack raised
+
+## v2.0.1 (5 July 2026)
 - Standalone mode: measuring and the LED indicator start immediately at
   boot instead of waiting for a Zigbee join, so the sensor is usable with
   no network in range (e.g. in a car). Zigbee keeps steering in the

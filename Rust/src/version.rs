@@ -10,8 +10,8 @@
 //!   shown as "Firmware ID" on Zigbee2MQTT's device About page
 
 pub const MAJOR: u8 = 2;
-pub const MINOR: u8 = 0;
-pub const PATCH: u8 = 1;
+pub const MINOR: u8 = 1;
+pub const PATCH: u8 = 0;
 
 /// Firmware build date (YYYYMMDD) for the Basic cluster's `dateCode`.
 pub const DATE_CODE: &str = "20260705";

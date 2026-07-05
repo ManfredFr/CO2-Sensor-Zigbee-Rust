@@ -30,6 +30,7 @@
 //! Both peripherals are therefore configured through `esp-idf-sys` FFI
 //! directly, which is stable and matches Espressif's C examples one-to-one.
 
+mod logger;
 mod version;
 mod zigbee;
 
@@ -273,6 +274,14 @@ fn main() -> anyhow::Result<()> {
         .stack_size(8192)
         .spawn(zigbee::zigbee_task)?;
 
+    // Offline history: one record per minute into the co2_log flash
+    // partition, regardless of network state. Retrieved over USB with
+    // tools/read-log.py.
+    std::thread::Builder::new()
+        .name("logger".into())
+        .stack_size(8192)
+        .spawn(logger::logger_task)?;
+
     // Deliberately do NOT wait for the network here: the sensor and LED are
     // useful standalone (e.g. in a car with no Zigbee anywhere). The stack
     // keeps steering in the background and readings start reporting the
@@ -304,6 +313,7 @@ fn main() -> anyhow::Result<()> {
         match read_co2() {
             Some(ppm) => {
                 info!("[CO2] {ppm} ppm — reporting via Zigbee");
+                logger::LAST_PPM.store(ppm as u32, Ordering::SeqCst);
                 // CONNECTED can flip back to false if the device leaves or
                 // loses the network; skip reporting then, but keep the LED
                 // honest either way.
