@@ -30,6 +30,7 @@
 //! Both peripherals are therefore configured through `esp-idf-sys` FFI
 //! directly, which is stable and matches Espressif's C examples one-to-one.
 
+mod version;
 mod zigbee;
 
 use esp_idf_svc::hal::delay::TickType;
@@ -37,8 +38,6 @@ use esp_idf_svc::sys as idf;
 use log::{info, warn};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-
-const VERSION: &str = "v2.0";
 
 // ---------------------------------------------------------------------------
 // Senseair S8 (CO2 sensor, Modbus RTU over UART)
@@ -251,7 +250,7 @@ fn main() -> anyhow::Result<()> {
     esp_idf_svc::log::EspLogger::initialize_default();
 
     info!("========================================");
-    info!("  Co2-Sensor {VERSION} (Rust)");
+    info!("  Co2-Sensor {} (Rust)", version::string());
     info!("========================================");
 
     s8_uart_init()?;

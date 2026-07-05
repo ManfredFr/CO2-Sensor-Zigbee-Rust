@@ -60,9 +60,6 @@ pub const INTERVAL_MAX_S: u32 = 300;
 pub const INTERVAL_DEFAULT_S: u32 = 30;
 pub const LED_BRIGHTNESS_DEFAULT: u32 = 50;
 
-/// Reported through the Basic cluster's `appVersion` attribute and decoded
-/// by the converter as `v{n/10}.{n%10}` — 20 means "v2.0".
-const FIRMWARE_APP_VERSION: u8 = 20;
 
 // ---------------------------------------------------------------------------
 // Cross-thread state
@@ -77,21 +74,23 @@ pub static LED_BRIGHTNESS: AtomicU32 = AtomicU32::new(LED_BRIGHTNESS_DEFAULT);
 pub static CONNECTED: AtomicBool = AtomicBool::new(false);
 
 // ---------------------------------------------------------------------------
-// ZCL string constants
-//
-// ZCL character strings are length-prefixed, not NUL-terminated: the first
-// byte is the string length. The stack stores the *pointer* we hand it, so
-// these must live for the program's lifetime — hence `static`.
+// ZCL strings
 // ---------------------------------------------------------------------------
 
-static MANUFACTURER: &[u8] = b"\x09Espressif";
-static MODEL: &[u8] = b"\x09Co2Sensor";
-static DESC_INTERVAL: &[u8] = b"\x0FReport interval";
-static DESC_BRIGHTNESS: &[u8] = b"\x0ELED brightness";
-// swBuildId / dateCode surface as "Firmware version" / "Firmware build date"
-// on Zigbee2MQTT's device About page (read during the interview).
-static SW_BUILD_ID: &[u8] = b"\x04v2.0";
-static DATE_CODE: &[u8] = b"\x0820260705";
+/// Convert a Rust string into a ZCL character string: length-prefixed (first
+/// byte = length), not NUL-terminated.
+///
+/// The stack stores the *pointer* we hand it rather than copying, so the
+/// buffer must live for the program's lifetime — `Box::leak` provides that.
+/// This is called a handful of times during endpoint construction, so the
+/// deliberate leak amounts to a few dozen bytes, once.
+fn zcl_string(s: &str) -> *mut c_void {
+    assert!(s.len() <= u8::MAX as usize, "ZCL string too long");
+    let mut bytes = Vec::with_capacity(s.len() + 1);
+    bytes.push(s.len() as u8);
+    bytes.extend_from_slice(s.as_bytes());
+    Box::leak(bytes.into_boxed_slice()).as_mut_ptr() as *mut c_void
+}
 
 // ---------------------------------------------------------------------------
 // Stack callbacks
@@ -238,15 +237,18 @@ unsafe fn make_basic_identify(cluster_list: *mut esp_zb_cluster_list_t) {
     esp_zb_basic_cluster_add_attr(
         basic,
         esp_zb_zcl_basic_attr_t_ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID as u16,
-        MANUFACTURER.as_ptr() as *mut c_void,
+        zcl_string("Espressif"),
     );
     esp_zb_basic_cluster_add_attr(
         basic,
         esp_zb_zcl_basic_attr_t_ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID as u16,
-        MODEL.as_ptr() as *mut c_void,
+        zcl_string("Co2Sensor"),
     );
-    // `static` so the pointer stays valid for the stack's lifetime.
-    static APP_VERSION: u8 = FIRMWARE_APP_VERSION;
+    // Version attributes — all derived from src/version.rs. appVersion is
+    // the converter's `firmware_version` expose; swBuildId + dateCode show
+    // as "Firmware ID" on Zigbee2MQTT's device About page.
+    // (`static` so the pointer stays valid for the stack's lifetime.)
+    static APP_VERSION: u8 = crate::version::APP_VERSION;
     esp_zb_basic_cluster_add_attr(
         basic,
         esp_zb_zcl_basic_attr_t_ESP_ZB_ZCL_ATTR_BASIC_APPLICATION_VERSION_ID as u16,
@@ -255,12 +257,12 @@ unsafe fn make_basic_identify(cluster_list: *mut esp_zb_cluster_list_t) {
     esp_zb_basic_cluster_add_attr(
         basic,
         esp_zb_zcl_basic_attr_t_ESP_ZB_ZCL_ATTR_BASIC_SW_BUILD_ID as u16,
-        SW_BUILD_ID.as_ptr() as *mut c_void,
+        zcl_string(&crate::version::string()),
     );
     esp_zb_basic_cluster_add_attr(
         basic,
         esp_zb_zcl_basic_attr_t_ESP_ZB_ZCL_ATTR_BASIC_DATE_CODE_ID as u16,
-        DATE_CODE.as_ptr() as *mut c_void,
+        zcl_string(crate::version::DATE_CODE),
     );
     esp_zb_cluster_list_add_basic_cluster(
         cluster_list,
@@ -286,7 +288,7 @@ unsafe fn make_basic_identify(cluster_list: *mut esp_zb_cluster_list_t) {
 unsafe fn make_analog_output_ep(
     ep_list: *mut esp_zb_ep_list_t,
     endpoint: u8,
-    description: &'static [u8],
+    description: &str,
     default_value: f32,
     min: f32,
     max: f32,
@@ -303,7 +305,7 @@ unsafe fn make_analog_output_ep(
     esp_zb_analog_output_cluster_add_attr(
         ao,
         esp_zb_zcl_analog_output_attr_t_ESP_ZB_ZCL_ATTR_ANALOG_OUTPUT_DESCRIPTION_ID as u16,
-        description.as_ptr() as *mut c_void,
+        zcl_string(description),
     );
     // The attribute table stores these pointers rather than copying the
     // values, so leak the boxes deliberately — two f32s per endpoint, once.
@@ -393,7 +395,7 @@ pub fn zigbee_task() -> ! {
         make_analog_output_ep(
             ep_list,
             INTERVAL_ENDPOINT,
-            DESC_INTERVAL,
+            "Report interval",
             INTERVAL_DEFAULT_S as f32,
             INTERVAL_MIN_S as f32,
             INTERVAL_MAX_S as f32,
@@ -401,7 +403,7 @@ pub fn zigbee_task() -> ! {
         make_analog_output_ep(
             ep_list,
             BRIGHTNESS_ENDPOINT,
-            DESC_BRIGHTNESS,
+            "LED brightness",
             LED_BRIGHTNESS_DEFAULT as f32,
             0.0,
             100.0,
