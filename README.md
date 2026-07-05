@@ -24,28 +24,25 @@ A Zigbee End Device built on the ESP32-H2-DevKit-N4 with a Senseair S8 CO2 senso
 
 ## Software
 
+The firmware (**v2.0**) is written in **Rust** on std/ESP-IDF with Espressif's
+Zigbee SDK — see [`Rust/README.md`](Rust/README.md) for build, flash, and
+monitoring instructions plus the hard-won ESP32-H2 lessons.
+
 | Component | Version |
 |---|---|
-| Arduino IDE | 2.3.8 |
-| ESP32 Arduino Core (Espressif) | 3.3.7 |
+| Rust firmware | `Rust/` (esp-idf-svc 0.51, ESP-IDF v5.3.3, esp-zigbee-lib 1.6) |
 | Zigbee2MQTT | via Home Assistant add-on |
 
-## Board Settings
-
-| Setting | Value |
-|---|---|
-| Board | ESP32H2 Dev Module |
-| Partition Scheme | Zigbee 4MB with spiffs |
-| Zigbee Mode | Zigbee ED (end device) |
-| Erase All Flash Before Sketch Upload | Enabled |
+> The original Arduino firmware (v1.3, `Co2-Sensor.ino` + `sketch.yaml`) was
+> removed after the Rust port was verified end-to-end; it remains available
+> in git history.
 
 ## Project Files
 
 | File | Description |
 |---|---|
-| `Co2-Sensor.ino` | Arduino sketch |
-| `Co2-Sensor.js` | Zigbee2MQTT external converter |
-| `sketch.yaml` | Arduino board settings |
+| `Rust/` | Rust firmware (current) |
+| `Co2-Sensor.js` | Zigbee2MQTT external converter (shared, unchanged since v1.3) |
 | `CHANGELOG.md` | Version history |
 
 
