@@ -1,0 +1,16 @@
+# Rust needs a bigger main task stack
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=20000
+
+CONFIG_FREERTOS_HZ=1000
+
+# Zigbee: End Device role, native 802.15.4 radio
+CONFIG_ZB_ENABLED=y
+CONFIG_ZB_ZED=y
+CONFIG_ZB_RADIO_NATIVE=y
+
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+
+# Zigbee needs zb_storage / zb_fct partitions
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="/Users/manfred/.cache/co2-sensor-rust/partitions.csv"

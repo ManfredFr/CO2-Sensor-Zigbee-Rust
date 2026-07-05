@@ -1,7 +1,23 @@
 [build]
-target = "riscv32imac-unknown-none-elf"
+target = "riscv32imac-esp-espidf"
+# ESP-IDF's build tooling cannot handle spaces in paths, and this project
+# lives under Dropbox ("1 Personal/[2] Creative & Hobbies/..."), so both the
+# cargo target dir and the ESP-IDF install dir must live outside the project.
+target-dir = "/Users/manfred/.cache/co2-sensor-rust/target"
 
-[target.riscv32imac-unknown-none-elf]
-rustflags = [
-    "-C", "link-arg=-Tlinkall.x",
-]
+[target.riscv32imac-esp-espidf]
+linker = "ldproxy"
+runner = "espflash flash --monitor"
+rustflags = ["--cfg", "espidf_time64"]
+
+[unstable]
+build-std = ["std", "panic_abort"]
+
+[env]
+MCU = "esp32h2"
+ESP_IDF_VERSION = "v5.3.3"
+ESP_IDF_TOOLS_INSTALL_DIR = "global"  # ~/.espressif — no spaces in path
+# Workspace anchor is inferred from the target dir (moved out of the project
+# because of spaces), so point esp-idf-sys at the crate that carries the
+# [package.metadata.esp-idf-sys] section explicitly.
+ESP_IDF_SYS_ROOT_CRATE = "co2-sensor"

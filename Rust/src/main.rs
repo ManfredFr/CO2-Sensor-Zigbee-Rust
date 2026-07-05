@@ -1,167 +1,153 @@
-#![no_std]
-#![no_main]
-
-use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
-use esp_backtrace as _;
-use esp_hal::gpio::Level;
-use esp_hal::rmt::{PulseCode, Rmt, TxChannel, TxChannelConfig, TxChannelCreator};
-use esp_hal::time::Rate;
-use esp_hal::timer::timg::TimerGroup;
-use esp_hal::uart::{Config as UartConfig, Uart};
+use esp_idf_svc::hal::delay::TickType;
+use esp_idf_svc::hal::gpio::AnyIOPin;
+use esp_idf_svc::hal::peripherals::Peripherals;
+use esp_idf_svc::hal::prelude::*;
+use esp_idf_svc::hal::rmt::{FixedLengthSignal, PinState, Pulse, TxRmtDriver};
+use esp_idf_svc::hal::uart::{UartConfig, UartDriver};
 use log::{info, warn};
+use std::time::Duration;
 
-// ESP-IDF v5.x app descriptor — must be the first symbol in DROM (.rodata_desc)
-// so the second-stage bootloader can find it at app partition offset +0x20.
-// Magic word changed from 0xABCD5AA5 (v4.x) to 0xABCD5432 (v5.x).
-#[repr(C)]
-struct EspAppDesc {
-    magic_word:           u32,
-    secure_version:       u32,
-    reserv1:              [u32; 2],
-    version:              [u8; 32],
-    project_name:         [u8; 32],
-    time:                 [u8; 16],
-    date:                 [u8; 16],
-    idf_ver:              [u8; 32],
-    app_elf_sha256:       [u8; 32],
-    min_efuse_blk_rev:    u16,
-    max_efuse_blk_rev:    u16,
-    mmu_page_size:        u8,
-    reserv3:              [u8; 3],
-    reserv2:              [u32; 18],
-}
+const VERSION: &str = "v2.0";
 
-#[unsafe(link_section = ".rodata_desc")]
-#[unsafe(no_mangle)]
-static ESP_APP_DESC: EspAppDesc = EspAppDesc {
-    magic_word:        0xABCD5432,
-    secure_version:    0,
-    reserv1:           [0; 2],
-    version:           *b"0.3.0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    project_name:      *b"co2-sensor\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-    time:              [0; 16],
-    date:              [0; 16],
-    idf_ver:           [0; 32],
-    app_elf_sha256:    [0; 32],
-    min_efuse_blk_rev: 0,
-    max_efuse_blk_rev: 0xFFFF,
-    mmu_page_size:     0,
-    reserv3:           [0; 3],
-    reserv2:           [0; 18],
-};
-
-// Senseair S8 Modbus RTU: read input register 3 (CO2 concentration, 1 register)
-// Address 0xFE = broadcast, function 0x04 = read input registers
+// Senseair S8 Modbus RTU: read input register 3 (CO2 ppm)
 const S8_READ_CO2: [u8; 8] = [0xFE, 0x04, 0x00, 0x03, 0x00, 0x01, 0xD5, 0xC5];
 
-// WS2812B on GPIO8 — RMT base 32 MHz, clk_divider=4 → 8 MHz (125 ns/tick)
-// This board's LED uses RGB byte order (not the standard WS2812 GRB order).
-// T0: high=3 (375 ns), low=7 (875 ns)
-// T1: high=6 (750 ns), low=4 (500 ns)
-// Reset: low=400 ticks (50 µs)
-fn ws2812_frame(r: u8, g: u8, b: u8) -> [u32; 26] {
-    let mut data = [PulseCode::empty(); 26];
-    let mut i = 0usize;
-    for byte in [r, g, b] {
-        for bit in (0..8).rev() {
-            data[i] = if (byte >> bit) & 1 == 1 {
-                PulseCode::new(Level::High, 6, Level::Low, 4)
-            } else {
-                PulseCode::new(Level::High, 3, Level::Low, 7)
-            };
-            i += 1;
-        }
+const LED_BRIGHTNESS_DEFAULT: u32 = 50;
+const INTERVAL_DEFAULT_S: u32 = 30;
+
+// Send one WS2812 frame via RMT. This board's LED uses RGB byte order.
+fn ws2812_write(tx: &mut TxRmtDriver, r: u8, g: u8, b: u8) -> anyhow::Result<()> {
+    let ticks_hz = tx.counter_clock()?;
+    let t0h = Pulse::new_with_duration(ticks_hz, PinState::High, &Duration::from_nanos(350))?;
+    let t0l = Pulse::new_with_duration(ticks_hz, PinState::Low, &Duration::from_nanos(800))?;
+    let t1h = Pulse::new_with_duration(ticks_hz, PinState::High, &Duration::from_nanos(700))?;
+    let t1l = Pulse::new_with_duration(ticks_hz, PinState::Low, &Duration::from_nanos(600))?;
+
+    let mut signal = FixedLengthSignal::<24>::new();
+    // RGB byte order on the wire for this board
+    let color: u32 = ((r as u32) << 16) | ((g as u32) << 8) | b as u32;
+    for i in (0..24).rev() {
+        let bit = (color >> i) & 1 == 1;
+        let (h, l) = if bit { (t1h, t1l) } else { (t0h, t0l) };
+        signal.set(23 - i as usize, &(h, l))?;
     }
-    // Reset pulse: hold low for >50 µs (400 ticks at 125 ns = 50 µs)
-    data[24] = PulseCode::new(Level::Low, 400, Level::Low, 0);
-    data[25] = PulseCode::empty();
-    data
+    tx.start_blocking(&signal)?;
+    Ok(())
 }
 
-#[esp_hal_embassy::main]
-async fn main(_spawner: Spawner) {
-    let peripherals = esp_hal::init(esp_hal::Config::default());
-    esp_println::logger::init_logger(log::LevelFilter::Info);
+fn set_led(tx: &mut TxRmtDriver, r: u8, g: u8, b: u8, brightness: u32) {
+    let scale = |c: u8| ((c as u32 * brightness) / 100) as u8;
+    if let Err(e) = ws2812_write(tx, scale(r), scale(g), scale(b)) {
+        warn!("[LED] write failed: {e}");
+    }
+}
 
-    let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_hal_embassy::init(timg0.timer0);
+// Read CO2 ppm from the S8 over Modbus RTU. Returns None on timeout/bad frame.
+fn read_co2(uart: &UartDriver) -> Option<u16> {
+    // Flush stale RX bytes
+    let mut discard = [0u8; 16];
+    while uart.read(&mut discard, TickType::new_millis(0).ticks()).unwrap_or(0) > 0 {}
 
-    // UART1: GPIO4 = RX (← S8 TxD), GPIO5 = TX (→ S8 RxD), 9600 8N1
-    let mut uart = Uart::new(
-        peripherals.UART1,
-        UartConfig::default().with_baudrate(9600),
-    )
-    .unwrap()
-    .with_rx(peripherals.GPIO4)
-    .with_tx(peripherals.GPIO5);
+    if uart.write(&S8_READ_CO2).is_err() {
+        warn!("[S8] UART write failed");
+        return None;
+    }
 
-    // RMT → WS2812B RGB LED on GPIO8
-    let rmt = Rmt::new(peripherals.RMT, Rate::from_mhz(32)).unwrap();
-    let mut led = rmt
-        .channel0
-        .configure_tx(
-            peripherals.GPIO8,
-            TxChannelConfig::default().with_clk_divider(4),
-        )
-        .unwrap();
+    let mut resp = [0u8; 7];
+    let mut got = 0;
+    let deadline = std::time::Instant::now() + Duration::from_millis(1000);
+    while got < 7 {
+        if std::time::Instant::now() > deadline {
+            warn!("[S8] Timeout — {got}/7 bytes received");
+            return None;
+        }
+        got += uart
+            .read(&mut resp[got..], TickType::new_millis(100).ticks())
+            .unwrap_or(0);
+    }
 
-    // Boot indicator: white briefly
-    led = led.transmit(&ws2812_frame(30, 30, 30)).unwrap().wait().unwrap();
-    info!("CO2 sensor booted");
+    info!(
+        "[S8] Response: {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
+        resp[0], resp[1], resp[2], resp[3], resp[4], resp[5], resp[6]
+    );
+
+    if resp[0] != 0xFE || resp[1] != 0x04 || resp[2] != 0x02 {
+        warn!("[S8] Bad response header");
+        return None;
+    }
+    Some(((resp[3] as u16) << 8) | resp[4] as u16)
+}
+
+fn main() -> anyhow::Result<()> {
+    esp_idf_svc::sys::link_patches();
+    esp_idf_svc::log::EspLogger::initialize_default();
+
+    info!("========================================");
+    info!("  Co2-Sensor {VERSION} (Rust)");
+    info!("========================================");
+
+    let p = Peripherals::take()?;
+
+    // S8 UART: GPIO4 = RX (← S8 TX), GPIO5 = TX (→ S8 RX), 9600 8N1
+    let uart = UartDriver::new(
+        p.uart1,
+        p.pins.gpio5, // TX
+        p.pins.gpio4, // RX
+        Option::<AnyIOPin>::None,
+        Option::<AnyIOPin>::None,
+        &UartConfig::new().baudrate(Hertz(9_600)),
+    )?;
+    info!("[INIT] S8 UART started (RX=GPIO4 TX=GPIO5 @ 9600)");
+
+    // WS2812 LED on GPIO8 via RMT
+    let mut led = TxRmtDriver::new(p.rmt.channel0, p.pins.gpio8, &Default::default())?;
+
+    // Boot flash: brief white
+    set_led(&mut led, 30, 30, 30, 100);
+    std::thread::sleep(Duration::from_millis(500));
+    set_led(&mut led, 0, 0, 0, 100);
+    info!("[INIT] LED ready (GPIO8)");
+
+    let brightness = LED_BRIGHTNESS_DEFAULT;
+    let interval = Duration::from_secs(INTERVAL_DEFAULT_S as u64);
+    let mut read_count = 0u32;
+    let mut fail_count = 0u32;
 
     loop {
-        // Drain stale RX bytes
-        let mut discard = [0u8; 1];
-        while uart.read_buffered(&mut discard).unwrap_or(0) > 0 {}
+        read_count += 1;
+        info!("[LOOP] Read #{read_count}");
 
-        // Send Modbus read command
-        let mut sent = 0;
-        while sent < S8_READ_CO2.len() {
-            sent += uart.write(&S8_READ_CO2[sent..]).unwrap_or(0);
-        }
-        uart.flush().ok();
-
-        Timer::after(Duration::from_millis(500)).await;
-
-        let mut buf = [0u8; 16];
-        let n = uart.read_buffered(&mut buf).unwrap_or(0);
-
-        if n >= 7 && buf[0] == 0xFE && buf[1] == 0x04 && buf[2] == 0x02 {
-            let ppm = ((buf[3] as u16) << 8) | buf[4] as u16;
-            info!("CO2: {} ppm", ppm);
-
-            // CO2 quality → LED color
-            // <= 1000 ppm : green  (good)
-            // <= 2000 ppm : yellow (fair/poor)
-            // <= 5000 ppm : red    (bad)
-            //  > 5000 ppm : flashing red (dangerous)
-            if ppm > 5000 {
-                // Flash red 5× over the next 5 s (~500 ms on/off)
-                for _ in 0..5 {
-                    led = led.transmit(&ws2812_frame(180, 0, 0)).unwrap().wait().unwrap();
-                    Timer::after(Duration::from_millis(400)).await;
-                    led = led.transmit(&ws2812_frame(0, 0, 0)).unwrap().wait().unwrap();
-                    Timer::after(Duration::from_millis(400)).await;
-                }
-            } else {
-                let (r, g, b) = if ppm <= 1000 {
-                    (0u8, 80u8, 0u8)    // green
-                } else if ppm <= 2000 {
-                    (120u8, 30u8, 0u8)  // orange
+        match read_co2(&uart) {
+            Some(ppm) => {
+                info!("[CO2] {ppm} ppm");
+                if ppm > 5000 {
+                    // Dangerous: flash red for the whole interval
+                    let end = std::time::Instant::now() + interval;
+                    let mut on = true;
+                    while std::time::Instant::now() < end {
+                        if on {
+                            set_led(&mut led, 220, 0, 0, brightness);
+                        } else {
+                            set_led(&mut led, 0, 0, 0, brightness);
+                        }
+                        on = !on;
+                        std::thread::sleep(Duration::from_millis(500));
+                    }
                 } else {
-                    (150u8, 0u8, 0u8)   // red
-                };
-                led = led.transmit(&ws2812_frame(r, g, b)).unwrap().wait().unwrap();
-                Timer::after(Duration::from_secs(5)).await;
+                    let (r, g, b) = match ppm {
+                        0..=1000 => (0, 120, 0),    // green — good
+                        1001..=2000 => (200, 50, 0), // orange — fair/poor
+                        _ => (220, 0, 0),            // red — bad
+                    };
+                    set_led(&mut led, r, g, b, brightness);
+                    std::thread::sleep(interval);
+                }
             }
-        } else {
-            if n > 0 {
-                warn!("S8 unexpected response ({} bytes): {:02X?}", n, &buf[..n]);
-            } else {
-                warn!("S8 no response");
+            None => {
+                fail_count += 1;
+                warn!("[CO2] Read failed (fail #{fail_count})");
+                std::thread::sleep(interval);
             }
-            Timer::after(Duration::from_secs(5)).await;
         }
     }
 }
