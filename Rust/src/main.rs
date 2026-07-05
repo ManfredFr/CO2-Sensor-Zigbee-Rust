@@ -1,11 +1,9 @@
 mod zigbee;
 
 use esp_idf_svc::hal::delay::TickType;
-use esp_idf_svc::hal::gpio::AnyIOPin;
 use esp_idf_svc::hal::peripherals::Peripherals;
-use esp_idf_svc::hal::prelude::*;
 use esp_idf_svc::hal::rmt::{FixedLengthSignal, PinState, Pulse, TxRmtDriver};
-use esp_idf_svc::hal::uart::{UartConfig, UartDriver};
+use esp_idf_svc::sys as idf;
 use log::{info, warn};
 use std::time::Duration;
 
@@ -42,13 +40,50 @@ fn set_led(tx: &mut TxRmtDriver, r: u8, g: u8, b: u8, brightness: u32) {
     }
 }
 
-// Read CO2 ppm from the S8 over Modbus RTU. Returns None on timeout/bad frame.
-fn read_co2(uart: &UartDriver) -> Option<u16> {
-    // Flush stale RX bytes
-    let mut discard = [0u8; 16];
-    while uart.read(&mut discard, TickType::new_millis(0).ticks()).unwrap_or(0) > 0 {}
+const S8_UART: idf::uart_port_t = 1;
 
-    if uart.write(&S8_READ_CO2).is_err() {
+// Raw ESP-IDF UART driver. esp-idf-hal 0.45's UartConfig panics on the
+// ESP32-H2 (its default source clock PLL_F48M has no SourceClock variant),
+// so the driver is set up via FFI directly: UART1, 9600 8N1, GPIO4 RX / GPIO5 TX.
+fn s8_uart_init() -> anyhow::Result<()> {
+    let mut cfg: idf::uart_config_t = unsafe { core::mem::zeroed() };
+    cfg.baud_rate = 9_600;
+    cfg.data_bits = idf::uart_word_length_t_UART_DATA_8_BITS;
+    cfg.parity = idf::uart_parity_t_UART_PARITY_DISABLE;
+    cfg.stop_bits = idf::uart_stop_bits_t_UART_STOP_BITS_1;
+    cfg.flow_ctrl = idf::uart_hw_flowcontrol_t_UART_HW_FLOWCTRL_DISABLE;
+    unsafe {
+        idf::esp!(idf::uart_param_config(S8_UART, &cfg))?;
+        idf::esp!(idf::uart_set_pin(S8_UART, 5, 4, -1, -1))?; // TX=5 RX=4
+        idf::esp!(idf::uart_driver_install(S8_UART, 256, 0, 0, std::ptr::null_mut(), 0))?;
+    }
+    Ok(())
+}
+
+fn s8_read(buf: &mut [u8], timeout_ms: u32) -> usize {
+    let n = unsafe {
+        idf::uart_read_bytes(
+            S8_UART,
+            buf.as_mut_ptr() as *mut core::ffi::c_void,
+            buf.len() as u32,
+            TickType::new_millis(timeout_ms as u64).ticks(),
+        )
+    };
+    if n < 0 { 0 } else { n as usize }
+}
+
+// Read CO2 ppm from the S8 over Modbus RTU. Returns None on timeout/bad frame.
+fn read_co2() -> Option<u16> {
+    unsafe { idf::uart_flush_input(S8_UART) }; // drop stale RX bytes
+
+    let written = unsafe {
+        idf::uart_write_bytes(
+            S8_UART,
+            S8_READ_CO2.as_ptr() as *const core::ffi::c_void,
+            S8_READ_CO2.len(),
+        )
+    };
+    if written != S8_READ_CO2.len() as i32 {
         warn!("[S8] UART write failed");
         return None;
     }
@@ -61,9 +96,7 @@ fn read_co2(uart: &UartDriver) -> Option<u16> {
             warn!("[S8] Timeout — {got}/7 bytes received");
             return None;
         }
-        got += uart
-            .read(&mut resp[got..], TickType::new_millis(100).ticks())
-            .unwrap_or(0);
+        got += s8_read(&mut resp[got..], 100);
     }
 
     info!(
@@ -89,14 +122,7 @@ fn main() -> anyhow::Result<()> {
     let p = Peripherals::take()?;
 
     // S8 UART: GPIO4 = RX (← S8 TX), GPIO5 = TX (→ S8 RX), 9600 8N1
-    let uart = UartDriver::new(
-        p.uart1,
-        p.pins.gpio5, // TX
-        p.pins.gpio4, // RX
-        Option::<AnyIOPin>::None,
-        Option::<AnyIOPin>::None,
-        &UartConfig::new().baudrate(Hertz(9_600)),
-    )?;
+    s8_uart_init()?;
     info!("[INIT] S8 UART started (RX=GPIO4 TX=GPIO5 @ 9600)");
 
     // WS2812 LED on GPIO8 via RMT
@@ -132,7 +158,7 @@ fn main() -> anyhow::Result<()> {
         let brightness = zigbee::LED_BRIGHTNESS.load(std::sync::atomic::Ordering::SeqCst);
         info!("[LOOP] Read #{read_count} (interval: {}s)", interval.as_secs());
 
-        match read_co2(&uart) {
+        match read_co2() {
             Some(ppm) => {
                 info!("[CO2] {ppm} ppm — reporting via Zigbee");
                 if zigbee::CONNECTED.load(std::sync::atomic::Ordering::SeqCst) {

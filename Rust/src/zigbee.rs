@@ -42,7 +42,7 @@ static DESC_BRIGHTNESS: &[u8] = b"\x0ELED brightness";
 /// The library declares this symbol extern and the linker resolves it here.
 #[no_mangle]
 pub unsafe extern "C" fn esp_zb_app_signal_handler(signal: *mut esp_zb_app_signal_t) {
-    let sig_type = **((*signal).p_app_signal as *mut *mut u32) as u32;
+    let sig_type = *(*signal).p_app_signal;
     let status = (*signal).esp_err_status;
     let ok = status == 0;
 
