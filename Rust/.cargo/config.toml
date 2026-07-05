@@ -8,7 +8,13 @@ target-dir = "/Users/manfred/.cache/co2-sensor-rust/target"
 [target.riscv32imac-esp-espidf]
 linker = "ldproxy"
 runner = "espflash flash --monitor"
-rustflags = ["--cfg", "espidf_time64"]
+# --undefined=vsnprintf: the closed-source 802.15.4 phy lib (-lphy, scanned
+# after the last -lc) pulls in lib_printf.o which needs vsnprintf. Marking it
+# undefined up front makes libc donate the symbol when it is scanned mid-line.
+rustflags = [
+    "--cfg", "espidf_time64",
+    "-C", "link-arg=-Wl,--undefined=vsnprintf",
+]
 
 [unstable]
 build-std = ["std", "panic_abort"]

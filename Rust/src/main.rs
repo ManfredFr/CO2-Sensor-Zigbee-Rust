@@ -1,3 +1,5 @@
+mod zigbee;
+
 use esp_idf_svc::hal::delay::TickType;
 use esp_idf_svc::hal::gpio::AnyIOPin;
 use esp_idf_svc::hal::peripherals::Peripherals;
@@ -12,8 +14,6 @@ const VERSION: &str = "v2.0";
 // Senseair S8 Modbus RTU: read input register 3 (CO2 ppm)
 const S8_READ_CO2: [u8; 8] = [0xFE, 0x04, 0x00, 0x03, 0x00, 0x01, 0xD5, 0xC5];
 
-const LED_BRIGHTNESS_DEFAULT: u32 = 50;
-const INTERVAL_DEFAULT_S: u32 = 30;
 
 // Send one WS2812 frame via RMT. This board's LED uses RGB byte order.
 fn ws2812_write(tx: &mut TxRmtDriver, r: u8, g: u8, b: u8) -> anyhow::Result<()> {
@@ -108,18 +108,36 @@ fn main() -> anyhow::Result<()> {
     set_led(&mut led, 0, 0, 0, 100);
     info!("[INIT] LED ready (GPIO8)");
 
-    let brightness = LED_BRIGHTNESS_DEFAULT;
-    let interval = Duration::from_secs(INTERVAL_DEFAULT_S as u64);
+    // Zigbee stack runs its own main loop in a dedicated thread
+    std::thread::Builder::new()
+        .name("zigbee".into())
+        .stack_size(8192)
+        .spawn(zigbee::zigbee_task)?;
+
+    info!("[ZIGBEE] Waiting to join network...");
+    while !zigbee::CONNECTED.load(std::sync::atomic::Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    zigbee::report_settings();
+    info!("[ZIGBEE] Initial interval and brightness reported");
+
     let mut read_count = 0u32;
     let mut fail_count = 0u32;
 
     loop {
         read_count += 1;
-        info!("[LOOP] Read #{read_count}");
+        let interval = Duration::from_secs(
+            zigbee::REPORT_INTERVAL_S.load(std::sync::atomic::Ordering::SeqCst) as u64,
+        );
+        let brightness = zigbee::LED_BRIGHTNESS.load(std::sync::atomic::Ordering::SeqCst);
+        info!("[LOOP] Read #{read_count} (interval: {}s)", interval.as_secs());
 
         match read_co2(&uart) {
             Some(ppm) => {
-                info!("[CO2] {ppm} ppm");
+                info!("[CO2] {ppm} ppm — reporting via Zigbee");
+                if zigbee::CONNECTED.load(std::sync::atomic::Ordering::SeqCst) {
+                    zigbee::report_co2(ppm);
+                }
                 if ppm > 5000 {
                     // Dangerous: flash red for the whole interval
                     let end = std::time::Instant::now() + interval;
