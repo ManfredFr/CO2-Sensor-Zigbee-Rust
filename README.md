@@ -3,14 +3,10 @@
 A battery-free, WiFi-free indoor air-quality sensor: an **ESP32-H2** reads CO2 from a **Senseair S8** and reports it over **Zigbee** into Home Assistant via Zigbee2MQTT. The onboard RGB LED gives an at-a-glance air-quality indication. Firmware is written in **Rust** (std/ESP-IDF with Espressif's Zigbee SDK via FFI).
 
 ## Features
-
-- **CO2 measurement** every 10–300 s (interval adjustable live from Home
-  Assistant) using the S8's Modbus RTU interface
-- **Zigbee End Device** — no WiFi credentials, no MQTT config on the device;
-  it joins the Zigbee mesh like any commercial sensor
+- **CO2 measurement** every 10–300 s (interval adjustable live from Home Assistant) using the S8's Modbus RTU interface
+- **Zigbee End Device** — no WiFi credentials, no MQTT config on the device; it joins the Zigbee mesh like any commercial sensor
 - **LED air-quality indicator** — brightness adjustable from HA, 0 % = off
-- **Settings survive in HA**: report interval and LED brightness are Zigbee
-  attributes, exposed as number sliders in Home Assistant
+- **Settings survive in HA**: report interval and LED brightness are Zigbee attributes, exposed as number sliders in Home Assistant
 
 ### LED colors
 
@@ -53,11 +49,9 @@ Only four wires are needed, all on the **left header (J1)** of the DevKit:
 | UART_TxD | GPIO4 | pin 9 | Sensor → ESP data |
 | UART_RxD | GPIO5 | pin 10 | ESP → Sensor data |
 
-> The S8 is powered from 5 V but its UART is 3.3 V logic — it connects to the
-> ESP32-H2 directly, **no level shifter needed**.
+> The S8 is powered from 5 V but its UART is 3.3 V logic — it connects to the ESP32-H2 directly, **no level shifter needed**.
 >
-> The RGB status LED is the onboard WS2812 on **GPIO8** (this board uses RGB
-> byte order, not the usual GRB) — no wiring required.
+> The RGB status LED is the onboard WS2812 on **GPIO8** (this board uses RGB byte order, not the usual GRB) — no wiring required.
 
 ### ESP32-H2-DevKit-N4 pinout
 
@@ -81,18 +75,12 @@ The firmware (**v2.0**) lives in [`Rust/`](Rust/) — see [`Rust/README.md`](Rus
 | esp-zigbee-lib / esp-zboss-lib | 1.6 (ESP-IDF remote components, FFI via bindgen) |
 | Zigbee2MQTT | via Home Assistant add-on |
 
-> The original Arduino-based firmware (v1.3) was removed after the Rust port
-> was verified end-to-end; it remains available in git history.
+> The original Arduino-based firmware (v1.3) was removed after the Rust port was verified end-to-end; it remains available in git history.
 
 ## Zigbee2MQTT setup
 
-1. Copy `Co2-Sensor.js` into the Zigbee2MQTT external converters folder
-   (`config/zigbee2mqtt/external_converters/` or add via the Z2M frontend
-   under Settings → External converters).
-2. Enable **Permit join** and power the device. It joins, the interview
-   discovers the three endpoints, and the converter exposes:
-   `co2` (ppm), `report_interval` (s), `led_brightness` (%),
-   `firmware_version`.
+1. Copy `Co2-Sensor.js` into the Zigbee2MQTT external converters folder (`config/zigbee2mqtt/external_converters/` or add via the Z2M frontend under Settings → External converters).
+2. Enable **Permit join** and power the device. It joins, the interview discovers the three endpoints, and the converter exposes: `co2` (ppm), `report_interval` (s), `led_brightness` (%), `firmware_version`.
 3. Optional: give it a friendly name and a custom icon (below).
 
 ## Project Files
